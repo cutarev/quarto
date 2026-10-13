@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meu Quarto</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; display: flex; height: 100vh; font: 13px system-ui, sans-serif; background: #1e2127; color: #ddd }
+  aside { width: 300px; flex: none; overflow-y: auto; padding: 4px 12px 12px; border-right: 1px solid #333 }
+  h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #8ab4f8 }
+  label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0 }
+  input[type=number], input[type=text], select { width: 120px; background: #2b2f37; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 3px 5px }
+  input[type=color] { width: 40px; height: 24px; padding: 0; border: none; background: none; cursor: pointer }
+  button, .btn { display: block; margin: 0; text-align: center; background: #343a46; color: #eee; border: 1px solid #4a5160; border-radius: 4px; padding: 5px 8px; cursor: pointer; font: inherit }
+  button:hover, .btn:hover { background: #404858 }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px }
+  .span { grid-column: span 2 }
+  .wall { display: flex; align-items: center; gap: 4px; margin: 4px 0 }
+  .wall span { flex: 1 }
+  .wall input[type=number] { width: 56px }
+  .wall .btn, .wall button { padding: 3px 7px }
+  .hint { color: #888; margin: 4px 0 }
+  main { flex: 1; position: relative; min-width: 0; overflow: hidden }
+  #bar { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px }
+  #help { position: absolute; bottom: 8px; left: 10px; color: #4a5160; font-size: 12px; pointer-events: none }
+  canvas { display: block }
+</style>
+<script type="importmap">
+  { "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+</script>
+</head>
+<body>
+<aside>
+  <h3>Quarto</h3>
+  <div id="room">
+    <label>Largura (cm)<input type="number" data-k="w" min="50"></label>
+    <label>Comprimento (cm)<input type="number" data-k="d" min="50"></label>
+    <label>Altura (cm)<input type="number" data-k="h" min="50"></label>
+    <label>Cor do chão<input type="color" data-k="floor"></label>
+  </div>
+
+  <h3>Paredes</h3>
+  <div class="hint">cor · padrão em cm (0 = esticar) · imagem</div>
+  <div id="walls"></div>
+
+  <h3>Adicionar</h3>
+  <div class="grid">
+    <button id="addDoor">+ Porta</button>
+    <button id="addWin">+ Janela</button>
+    <label class="btn span">+ Poster (PNG/JPG)<input type="file" id="addPoster" accept="image/*" hidden></label>
+  </div>
+  <div class="grid" id="catalog" style="margin-top: 4px"></div>
+
+  <h3>Selecionado</h3>
+  <div id="sel"></div>
+</aside>
+
+<main>
+  <div id="bar">
+    <button id="view">Ver 2D (V)</button>
+    <button id="save">Salvar</button>
+    <label class="btn">Abrir<input type="file" id="open" accept=".json,application/json" hidden></label>
+    <button id="new">Novo</button>
+  </div>
+  <div id="help">Arrastar objeto: mover · Arrastar vazio: girar câmera (3D) / mover (2D) · Botão direito: mover câmera · Roda: zoom · R: girar · Del: excluir · V: 2D/3D</div>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// Unidades: cm. Quarto vai de x=0..largura, z=0..comprimento. Paredes: 0=Fundo(z=0) 1=Direita(x=W) 2=Frente(z=D) 3=Esquerda(x=0)
+const WALLS = ['Fundo', 'Direita', 'Frente', 'Esquerda'];
+const T = 10; // espessura visual da parede (só o contorno)
+const MARK = { door: '#8b5a2b', window: '#4aa3df', poster: '#d94f8a' };
+const TITLE = { item: 'Móvel', door: 'Porta', window: 'Janela', poster: 'Poster' };
+const CATALOG = [ // nome, largura, profundidade, altura, cor
+  ['Cama casal', 140, 190, 50, '#7a5c43'], ['Cama solteiro', 90, 190, 50, '#7a5c43'],
+  ['Guarda-roupa', 160, 55, 210, '#a0785a'], ['Escrivaninha', 120, 60, 75, '#c49a6c'],
+  ['Cadeira', 50, 50, 90, '#444a55'], ['Criado-mudo', 45, 40, 55, '#a0785a'],
+  ['Cômoda', 100, 45, 85, '#a0785a'], ['Estante', 80, 30, 180, '#8a6a50'],
+  ['Sofá', 180, 85, 80, '#5a7a9a'], ['Rack/TV', 150, 40, 50, '#333333'],
+  ['Tapete', 200, 140, 1, '#b05a5a'], ['Caixa', 50, 50, 50, '#999999'],
+];
+const FIELDS = {
+  item: [['name', 'Nome', 'text'], ['w', 'Largura (cm)'], ['d', 'Profundidade (cm)'], ['h', 'Altura (cm)'], ['rot', 'Rotação (°)'], ['color', 'Cor', 'color']],
+  door: [['wall', 'Parede', 'wall'], ['pos', 'Posição (cm)'], ['w', 'Largura (cm)'], ['h', 'Altura (cm)']],
+  window: [['wall', 'Parede', 'wall'], ['pos', 'Posição (cm)'], ['sill', 'Peitoril (cm)'], ['w', 'Largura (cm)'], ['h', 'Altura (cm)']],
+  poster: [['wall', 'Parede', 'wall'], ['pos', 'Posição (cm)'], ['y', 'Altura do centro (cm)'], ['w', 'Largura (cm)'], ['h', 'Altura (cm)']],
+};
+
+const $ = s => document.querySelector(s);
+const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
+const snap = n => Math.round(n / 5) * 5;
+const clamp = (n, a, b) => Math.min(Math.max(n, a), b);
+
+const fresh = () => ({
+  room: { w: 400, d: 350, h: 260, floor: '#c9a77c' },
+  walls: WALLS.map(() => ({ color: '#f1ede4', img: null, tile: 100 })),
+  objs: [
+    { kind: 'door', wall: 2, pos: 60, w: 80, h: 210 },
+    { kind: 'window', wall: 0, pos: 200, w: 120, h: 110, sill: 100 },
+    { kind: 'item', name: 'Cama casal', w: 140, d: 190, h: 50, color: '#7a5c43', x: 200, z: 95, rot: 0 },
+    { kind: 'item', name: 'Guarda-roupa', w: 160, d: 55, h: 210, color: '#a0785a', x: 28, z: 230, rot: 90 },
+  ],
+});
+let state = fresh(), sel = null, is2d = false, drag = null, down = null, dirty = false;
+
+// ---------- cena ----------
+const view = $('main');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+view.append(renderer.domElement);
+const canvas = renderer.domElement;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#d9dde3');
+scene.add(new THREE.AmbientLight('#fff', 1.6));
+const sun = new THREE.DirectionalLight('#fff', 2);
+sun.position.set(-300, 800, 500);
+scene.add(sun);
+const world = new THREE.Group();
+scene.add(world);
+const helper = new THREE.BoxHelper(world, '#ff8800');
+scene.add(helper);
+const persp = new THREE.PerspectiveCamera(50, 1, 5, 20000);
+const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 5000);
+
+// ---------- texturas (imagens guardadas como data URL no estado) ----------
+const imgs = {};
+async function loadImg(url) {
+  if (!imgs[url]) {
+    const im = new Image();
+    im.src = url;
+    try { await im.decode(); } catch (e) { alert('Não consegui abrir essa imagem.'); throw e; }
+    imgs[url] = im;
+  }
+  return imgs[url];
+}
+async function readImg(file) {
+  const url = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(file); });
+  return loadImg(url);
+}
+function makeTex(src) {
+  const t = new THREE.Texture(src);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
+  return t;
+}
+const texCache = new WeakMap(); // dono (objeto do estado) -> {key, tex}; evita reenviar imagem pra GPU a cada rebuild
+function cachedTex(owner, key, make) {
+  let c = texCache.get(owner);
+  if (c?.key !== key) { c?.tex.dispose(); texCache.set(owner, c = { key, tex: make() }); }
+  return c.tex;
+}
+function floorTex() {
+  const R = state.room, t = cachedTex(R, R.floor, () => {
+    const c = Object.assign(document.createElement('canvas'), { width: 64, height: 64 }), g = c.getContext('2d');
+    g.fillStyle = R.floor; g.fillRect(0, 0, 64, 64);
+    g.fillStyle = 'rgba(0,0,0,.15)'; g.fillRect(0, 0, 64, 2); g.fillRect(0, 0, 2, 64);
+    const t = makeTex(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    return t;
+  });
+  t.repeat.set(R.w / 50, R.d / 50); // grade de 50 cm
+  return t;
+}
+function wallTex(wl, len, H) {
+  const t = cachedTex(wl, wl.img, () => makeTex(imgs[wl.img])), wrap = wl.tile > 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
+  if (t.wrapS !== wrap) { t.wrapS = t.wrapT = wrap; t.needsUpdate = true; }
+  // UV da ShapeGeometry = coordenadas em cm na parede
+  if (wl.tile > 0) t.repeat.set(1 / wl.tile, t.image.width / (t.image.height * wl.tile));
+  else t.repeat.set(1 / len, 1 / H);
+  return t;
+}
+function labelTex(o) {
+  return cachedTex(o, `${o.name}|${o.color}|${o.w}|${o.d}`, () => {
+    const w = 256, h = clamp(Math.round(256 * o.d / o.w), 32, 1024);
+    const c = Object.assign(document.createElement('canvas'), { width: w, height: h }), g = c.getContext('2d');
+    g.fillStyle = o.color; g.fillRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(0,0,0,.35)'; g.lineWidth = 8; g.strokeRect(0, 0, w, h);
+    let s = Math.min(44, h * 0.45);
+    do g.font = `bold ${s}px sans-serif`; while (g.measureText(o.name).width > w * 0.9 && --s > 8);
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineWidth = 4; g.strokeStyle = '#000a'; g.fillStyle = '#fff';
+    g.strokeText(o.name, w / 2, h / 2); g.fillText(o.name, w / 2, h / 2);
+    return makeTex(c);
+  });
+}
+
+// ---------- geometria ----------
+const mat = (color, extra) => new THREE.MeshStandardMaterial({ color, ...extra });
+const mesh = (geo, material, x = 0, y = 0, z = 0) => new THREE.Mesh(geo.translate(x, y, z), material);
+
+function frame(i) {
+  const { w: W, d: D } = state.room;
+  return [
+    { o: v3(0, 0, 0), dir: v3(1, 0, 0), n: v3(0, 0, 1), len: W },
+    { o: v3(W, 0, 0), dir: v3(0, 0, 1), n: v3(-1, 0, 0), len: D },
+    { o: v3(W, 0, D), dir: v3(-1, 0, 0), n: v3(0, 0, -1), len: W },
+    { o: v3(0, 0, D), dir: v3(0, 0, -1), n: v3(1, 0, 0), len: D },
+  ][i];
+}
+// põe obj no sistema da parede i: x local = ao longo da parede, y = altura, z = para dentro do quarto
+function place(obj, i, along) {
+  const f = frame(i);
+  obj.position.copy(f.o).addScaledVector(f.dir, along);
+  obj.rotation.y = -i * Math.PI / 2;
+  return obj;
+}
+
+function fix(o) { // mantém tudo dentro do quarto
+  const { w: W, d: D, h: H } = state.room;
+  if (o.kind === 'item') { o.x = clamp(o.x, 0, W); o.z = clamp(o.z, 0, D); return; }
+  const len = frame(o.wall).len;
+  o.w = clamp(o.w, 10, len - 2); o.h = clamp(o.h, 10, H - 2);
+  o.pos = clamp(o.pos, o.w / 2 + 1, len - o.w / 2 - 1);
+  if (o.kind === 'window') o.sill = clamp(o.sill, 1, H - o.h - 1);
+  if (o.kind === 'poster') o.y = clamp(o.y, o.h / 2, H - o.h / 2);
+}
+
+function build(o) {
+  fix(o);
+  let g;
+  if (o.kind === 'item') {
+    const side = mat(o.color);
+    g = mesh(new THREE.BoxGeometry(o.w, o.h, o.d), [side, side, mat('#fff', { map: labelTex(o) }), side, side, side]);
+    g.position.set(o.x, o.h / 2, o.z);
+    g.rotation.y = -o.rot * Math.PI / 180;
+  } else {
+    g = place(new THREE.Group(), o.wall, o.pos);
+    g.add(mesh(new THREE.BoxGeometry(o.w, 3, T), mat(MARK[o.kind]), 0, 2.5, -T / 2)); // marca no contorno (visível no 2D)
+    if (o.kind === 'door') {
+      g.add(mesh(new THREE.PlaneGeometry(o.w, o.h), mat(MARK.door), 0, o.h / 2, 0.5));
+      g.add(mesh(new THREE.CircleGeometry(o.w, 24, 0, Math.PI / 2).rotateX(Math.PI / 2),
+        mat(MARK.door, { transparent: true, opacity: 0.25, side: THREE.DoubleSide }), -o.w / 2, 0.5, 0));
+    }
+    if (o.kind === 'window') g.add(mesh(new THREE.PlaneGeometry(o.w, o.h), mat('#9fd3ff', { transparent: true, opacity: 0.35 }), 0, o.sill + o.h / 2, 0));
+    if (o.kind === 'poster') g.add(mesh(new THREE.PlaneGeometry(o.w, o.h),
+      mat('#fff', { map: cachedTex(o, o.img, () => makeTex(imgs[o.img])), transparent: true }), 0, o.y, 0.6));
+  }
+  g.userData.ref = o;
+  return g;
+}
+
+// Refaz a cena inteira a partir do estado. Paredes são planos de um lado só (virados pra dentro),
+// então a parede entre a câmera e o quarto some sozinha, estilo The Sims.
+function rebuild() {
+  world.traverse(o => { o.geometry?.dispose(); [o.material].flat().forEach(m => m?.dispose()); });
+  world.clear();
+  const { w: W, d: D, h: H } = state.room;
+  world.add(mesh(new THREE.PlaneGeometry(W, D).rotateX(-Math.PI / 2), mat('#fff', { map: floorTex() }), W / 2, 0, D / 2));
+  state.walls.forEach((wl, i) => {
+    const f = frame(i), s = new THREE.Shape().moveTo(0, 0).lineTo(f.len, 0).lineTo(f.len, H).lineTo(0, H);
+    for (const o of state.objs) if (o.kind === 'window' && o.wall === i) {
+      fix(o);
+      const a = o.pos - o.w / 2, b = o.pos + o.w / 2;
+      // ponytail: janelas sobrepostas na mesma parede quebram a triangulação; validar se virar problema
+      s.holes.push(new THREE.Path().moveTo(a, o.sill).lineTo(b, o.sill).lineTo(b, o.sill + o.h).lineTo(a, o.sill + o.h));
+    }
+    world.add(place(new THREE.Mesh(new THREE.ShapeGeometry(s), wl.img ? mat('#fff', { map: wallTex(wl, f.len, H) }) : mat(wl.color)), i, 0));
+    world.add(place(mesh(new THREE.BoxGeometry(f.len + 2 * T, 2, T), mat('#555'), f.len / 2, 1, -T / 2), i, 0));
+  });
+  for (const o of state.objs) world.add(build(o));
+  updateHelper();
+  dirty = true;
+}
+
+function updateHelper() {
+  const obj = sel && world.children.find(c => c.userData.ref === sel);
+  helper.visible = !!obj;
+  if (obj) helper.setFromObject(obj);
+}
+
+// ---------- câmeras ----------
+canvas.addEventListener('pointerdown', onDown); // registrado antes dos OrbitControls pra poder desligá-los ao arrastar
+const c3 = new OrbitControls(persp, canvas);
+c3.maxPolarAngle = Math.PI / 2 - 0.05;
+const c2 = new OrbitControls(ortho, canvas);
+c2.enableRotate = false;
+c2.screenSpacePanning = true;
+c2.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+c2.enabled = false;
+const cam = () => is2d ? ortho : persp, ctl = () => is2d ? c2 : c3;
+
+function resize() {
+  const { width: w, height: h } = view.getBoundingClientRect();
+  if (!w || !h) return;
+  const a = w / h, { w: W, d: D } = state.room, k = Math.max(D, W / a) * 0.65;
+  renderer.setSize(w, h);
+  persp.aspect = a; persp.updateProjectionMatrix();
+  Object.assign(ortho, { left: -k * a, right: k * a, top: k, bottom: -k }).updateProjectionMatrix();
+}
+function fitCams() {
+  const { w: W, d: D, h: H } = state.room, s = Math.max(W, D);
+  persp.position.set(W / 2 + s * 0.3, H + s * 0.8, D + s * 0.9);
+  c3.target.set(W / 2, 0, D / 2); c3.update();
+  ortho.position.set(W / 2, 2000, D / 2 + 0.01); ortho.zoom = 1; // de cima, com Fundo no topo da tela
+  c2.target.set(W / 2, 0, D / 2); c2.update();
+  resize();
+}
+function toggleView() {
+  is2d = !is2d;
+  c2.enabled = is2d; c3.enabled = !is2d;
+  $('#view').textContent = is2d ? 'Ver 3D (V)' : 'Ver 2D (V)';
+}
+new ResizeObserver(resize).observe(view);
+
+// ---------- arrastar ----------
+const ray = new THREE.Raycaster(), UP = v3(0, 1, 0);
+function setRay(e) {
+  const r = canvas.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, (r.top - e.clientY) / r.height * 2 + 1), cam());
+  return ray.ray;
+}
+const refOf = o => { while (o && !o.userData.ref) o = o.parent; return o?.userData.ref; };
+
+// parede visível (de frente) sob o cursor, em coordenadas da parede
+function wallHit(r) {
+  const H = state.room.h;
+  let best = null;
+  for (let i = 0; i < 4; i++) {
+    const f = frame(i), den = r.direction.dot(f.n);
+    if (den > -1e-6) continue; // olhando pelas costas (parede escondida) ou de cima
+    const t = f.o.clone().sub(r.origin).dot(f.n) / den, p = r.at(t, v3()), along = p.clone().sub(f.o).dot(f.dir);
+    if (t > 0 && along >= 0 && along <= f.len && p.y >= 0 && p.y <= H && (!best || t < best.t)) best = { t, i, along, y: p.y };
+  }
+  return best;
+}
+// fallback (2D ou cursor no chão): parede mais perto do ponto no chão
+function floorWall(r) {
+  const p = r.intersectPlane(new THREE.Plane(UP, 0), v3());
+  if (!p) return null;
+  let best = null;
+  for (let i = 0; i < 4; i++) {
+    const f = frame(i), along = clamp(p.clone().sub(f.o).dot(f.dir), 0, f.len);
+    const dist = p.distanceTo(f.o.clone().addScaledVector(f.dir, along));
+    if (!best || dist < best.dist) best = { i, along, dist };
+  }
+  return best;
+}
+
+function onDown(e) {
+  if (e.button !== 0) return;
+  down = { x: e.clientX, y: e.clientY };
+  setRay(e);
+  const hit = ray.intersectObject(world, true)[0], o = hit && refOf(hit.object);
+  if (!o) return;
+  select(o);
+  drag = { o, plane: new THREE.Plane(UP, -hit.point.y), dx: (o.x ?? 0) - hit.point.x, dz: (o.z ?? 0) - hit.point.z };
+  ctl().enabled = false;
+  canvas.setPointerCapture(e.pointerId);
+}
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const r = setRay(e), o = drag.o;
+  if (o.kind === 'item') {
+    const p = r.intersectPlane(drag.plane, v3());
+    if (!p) return;
+    o.x = snap(p.x + drag.dx); o.z = snap(p.z + drag.dz);
+  } else {
+    const h = wallHit(r) || floorWall(r);
+    if (!h) return;
+    o.wall = h.i; o.pos = snap(h.along);
+    if (o.kind === 'poster' && h.y != null) o.y = snap(h.y);
+  }
+  rebuild(); renderForm();
+});
+canvas.addEventListener('pointerup', e => {
+  if (drag) { drag = null; ctl().enabled = true; }
+  else if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) select(null);
+  down = null;
+});
+
+// ---------- painel ----------
+function select(o) { sel = o; renderForm(); updateHelper(); }
+function add(o) { state.objs.push(o); sel = o; rebuild(); renderForm(); }
+const act = {
+  rot: () => { sel.rot = (sel.rot + 90) % 360; },
+  dup: () => { const c = structuredClone(sel); c.kind === 'item' ? (c.x += 20, c.z += 20) : (c.pos += 20); state.objs.push(c); sel = c; },
+  del: () => { state.objs.splice(state.objs.indexOf(sel), 1); sel = null; },
+};
+function run(k) { if (!sel) return; act[k](); rebuild(); renderForm(); }
+
+function renderForm() {
+  const box = $('#sel');
+  if (!sel) return box.innerHTML = '<p class="hint">Clique num móvel, porta, janela ou poster para editar.</p>';
+  box.innerHTML = `<p><b>${TITLE[sel.kind]}</b></p>` + FIELDS[sel.kind].map(([k, label, t = 'number']) => `<label>${label}${t === 'wall'
+    ? `<select data-k="${k}">${WALLS.map((n, i) => `<option value="${i}">${n}</option>`).join('')}</select>`
+    : `<input type="${t}" data-k="${k}">`}</label>`).join('')
+    + `<div class="grid" style="margin-top: 6px">${sel.kind === 'item' ? '<button data-act="rot">Girar 90° (R)</button>' : ''}`
+    + '<button data-act="dup">Duplicar</button><button data-act="del">Excluir (Del)</button></div>';
+  box.querySelectorAll('[data-k]').forEach(el => el.value = sel[el.dataset.k]);
+}
+$('#sel').oninput = e => {
+  const k = e.target.dataset.k;
+  if (!k) return;
+  sel[k] = ['text', 'color'].includes(e.target.type) ? e.target.value : Number(e.target.value);
+  if (k === 'w' && sel.kind === 'poster') $('#sel [data-k="h"]').value = sel.h = Math.round(sel.w / sel.aspect);
+  rebuild();
+};
+$('#sel').onclick = e => e.target.dataset.act && run(e.target.dataset.act);
+
+function renderRoom() { document.querySelectorAll('#room [data-k]').forEach(el => el.value = state.room[el.dataset.k]); }
+function setRoom(e) {
+  const k = e.target.dataset.k;
+  state.room[k] = k === 'floor' ? e.target.value : Math.max(50, Number(e.target.value));
+  rebuild();
+  if (k !== 'floor') fitCams();
+}
+$('#room').addEventListener('input', e => e.target.type === 'color' && setRoom(e));
+$('#room').addEventListener('change', e => e.target.type === 'number' && setRoom(e)); // só ao terminar de digitar, senão "4" de "400" encolhe o quarto
+
+function renderWalls() {
+  $('#walls').innerHTML = WALLS.map((n, i) => `<div class="wall" data-i="${i}"><span>${n}</span>
+    <input type="color" data-k="color" title="Cor da parede">
+    <input type="number" data-k="tile" min="0" title="Largura do padrão em cm (0 = esticar a imagem na parede toda)">
+    <label class="btn" title="Papel de parede (PNG/JPG)">🖼<input type="file" accept="image/*" hidden></label>
+    <button data-k="clear" title="Remover papel de parede">✕</button></div>`).join('');
+  document.querySelectorAll('#walls .wall').forEach((row, i) => {
+    row.querySelector('[data-k="color"]').value = state.walls[i].color;
+    row.querySelector('[data-k="tile"]').value = state.walls[i].tile;
+  });
+}
+const wallOf = e => state.walls[e.target.closest('.wall').dataset.i];
+$('#walls').oninput = e => {
+  const k = e.target.dataset.k;
+  if (!k) return;
+  wallOf(e)[k] = k === 'tile' ? Number(e.target.value) : e.target.value;
+  rebuild();
+};
+$('#walls').onchange = async e => {
+  const f = e.target.type === 'file' && e.target.files[0];
+  if (!f) return;
+  const wl = wallOf(e);
+  e.target.value = '';
+  wl.img = (await readImg(f)).src;
+  rebuild();
+};
+$('#walls').onclick = e => { if (e.target.dataset.k === 'clear') { wallOf(e).img = null; rebuild(); } };
+
+$('#catalog').innerHTML = CATALOG.map(([n], i) => `<button data-i="${i}">${n}</button>`).join('');
+$('#catalog').onclick = e => {
+  const i = e.target.dataset.i;
+  if (i == null) return;
+  const [name, w, d, h, color] = CATALOG[i];
+  add({ kind: 'item', name, w, d, h, color, x: state.room.w / 2, z: state.room.d / 2, rot: 0 });
+};
+$('#addDoor').onclick = () => add({ kind: 'door', wall: 0, pos: state.room.w / 2, w: 80, h: 210 });
+$('#addWin').onclick = () => add({ kind: 'window', wall: 0, pos: state.room.w / 2, w: 100, h: 100, sill: 100 });
+$('#addPoster').onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const im = await readImg(f), a = im.width / im.height;
+  add({ kind: 'poster', img: im.src, aspect: a, wall: 0, pos: state.room.w / 2, y: 150, w: 60, h: Math.round(60 / a) });
+};
+
+// ---------- arquivo ----------
+async function setState(s) {
+  await Promise.all([...s.walls.map(w => w.img), ...s.objs.map(o => o.img)].filter(Boolean).map(loadImg));
+  state = s; sel = null;
+  renderRoom(); renderWalls(); renderForm(); fitCams(); rebuild();
+  dirty = false;
+}
+$('#save').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(state)], { type: 'application/json' }));
+  a.download = 'quarto.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  dirty = false;
+};
+$('#open').onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  try { await setState(JSON.parse(await f.text())); } catch (err) { alert('Arquivo inválido: ' + err.message); }
+};
+$('#new').onclick = () => confirm('Começar um quarto novo? O que não foi salvo será perdido.') && setState(fresh());
+$('#view').onclick = toggleView;
+addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  const k = e.key.toLowerCase();
+  if (k === 'v') toggleView();
+  if (k === 'escape') select(null);
+  if (k === 'r' && sel?.kind === 'item') run('rot');
+  if (k === 'delete' || k === 'backspace') run('del');
+});
+
+setState(fresh());
+renderer.setAnimationLoop(() => renderer.render(scene, cam()));
+</script>
+</body>
+</html>
