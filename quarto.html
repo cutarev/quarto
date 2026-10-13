@@ -145,7 +145,7 @@
     <tr><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd></td><td>desfazer / refazer</td></tr>
     <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> / <kbd>V</kbd></td><td>3D / planta / andar / alterna 3D-planta</td></tr>
     <tr><td><kbd>W A S D</kbd></td><td>andar no modo 🚶 (<kbd>Shift</kbd> corre; arraste para olhar)</td></tr>
-    <tr><td><kbd>G</kbd></td><td>liga/desliga o ímã</td></tr>
+    <tr><td><kbd>G</kbd> / <kbd>Shift</kbd>+arrastar</td><td>liga/desliga o ímã · arrasta sem ímã</td></tr>
     <tr><td><kbd>Ctrl+S</kbd></td><td>salvar projeto (.json)</td></tr>
     <tr><td>Botão direito</td><td>mover a câmera · roda do mouse = zoom</td></tr>
   </table>
@@ -692,8 +692,7 @@ const PRESETS = {
   },
 };
 
-let state = PRESETS.casal(), sel = null, mode = '', drag = null, down = null, magnetOn = true, gridStep = 5, needsRender = true, saved = true;
-const stacked = new WeakSet();
+let state = PRESETS.casal(), sel = null, mode = '', drag = null, down = null, hover = null, magnetOn = true, gridStep = 5, needsRender = true, saved = true;
 
 // ======================================================================
 // Cena
@@ -719,6 +718,8 @@ const ceilLight = new THREE.PointLight('#ffd9a8', 0, 0, 1.6);
 scene.add(ceilLight);
 const selBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: '#ff9f43', depthTest: false, transparent: true }));
 selBox.renderOrder = 10; selBox.visible = false; scene.add(selBox);
+const hoverBox = new THREE.LineSegments(selBox.geometry, new THREE.LineBasicMaterial({ color: '#5aa0ff', depthTest: false, transparent: true, opacity: .7 }));
+hoverBox.renderOrder = 9; hoverBox.visible = false; scene.add(hoverBox);
 const persp = new THREE.PerspectiveCamera(50, 1, 5, 20000);
 const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 5000);
 const WARN = new THREE.MeshBasicMaterial({ color: '#ff3b3b', transparent: true, opacity: .45, depthWrite: false });
@@ -842,7 +843,7 @@ function fit(o) { // mantém tudo dentro do quarto
 }
 
 // ---------- casca (piso, paredes, rodapé, grade) ----------
-let shell = null, shellSig = '', gridLines = null;
+let shell = null, shellSig = '', gridLines = null, ceiling = null;
 function disposeGroup(g) {
   g?.traverse(o => { o.geometry?.dispose(); if (o.material?.userData.own) o.material.dispose(); });
 }
@@ -901,6 +902,9 @@ function buildShell() {
   }
   gridLines.visible = mode === '2d';
   shell.add(gridLines);
+  ceiling = new THREE.Mesh(new THREE.PlaneGeometry(W, D).rotateX(Math.PI / 2), M('#f7f5f0', { roughness: 1 }));
+  ceiling.position.set(W / 2, H, D / 2); ceiling.visible = mode === 'walk'; ceiling.raycast = () => {};
+  shell.add(ceiling);
   world.add(shell);
 }
 const getShellSig = () => JSON.stringify([state.room, state.walls, state.objs.filter(o => o.kind === 'door' || o.kind === 'window').map(o => [o.kind, o.wall, o.pos, o.w, o.h, o.sill])]);
@@ -982,14 +986,15 @@ function buildWallObj(o) {
   const mark = new THREE.Mesh(new THREE.BoxGeometry(o.w, 3, WALL_T), M(MARK[o.kind]));
   mark.position.set(0, 2.5, -WALL_T / 2); mark.raycast = () => {};
   g.add(mark);
-  return wallPlace(g, o.wall, o.pos);
+  return g;
 }
+// o que exige reconstruir o modelo; posição/rotação só reposicionam (placeNode)
 const objSig = o => o.kind === 'item'
-  ? JSON.stringify([o.type, o.w, o.d, o.h, o.color, o.color2, state.time])
-  : JSON.stringify([o, state.room.h, state.room.w, state.room.d]);
+  ? JSON.stringify([o.type, o.w, o.d, o.h, o.color, o.color2, tp(o).light ? state.time : 0])
+  : JSON.stringify([o.kind, o.w, o.h, o.sill, o.y, o.img, o.frame, o.hinge, o.out, o.open, o.color, o.panes, o.curtain, o.ccolor, state.room.h]);
 
 function placeNode(o, g) {
-  if (o.kind !== 'item') return;
+  if (o.kind !== 'item') return wallPlace(g, o.wall, o.pos);
   g.position.set(o.x, o.y, o.z);
   g.rotation.y = rad(o.rot);
   const wm = g.children.find(c => c.userData.warn);
@@ -1013,6 +1018,7 @@ function sync() {
     placeNode(o, n.grp);
   }
   for (const [o, n] of nodes) if (!state.objs.includes(o)) { world.remove(n.grp); disposeGroup(n.grp); nodes.delete(o); }
+  if (hover && !nodes.has(hover)) hover = null;
   collisions();
   updateSel(); updateStats(); need();
 }
@@ -1037,21 +1043,26 @@ function collisions() {
 // Seleção visual
 // ======================================================================
 const selBounds = new THREE.Box3();
-function updateSel() {
-  const n = sel && nodes.get(sel);
-  selBox.visible = !!n && mode !== 'walk';
+function frameBox(box, o, pad) {
+  const n = nodes.get(o);
+  box.visible = !!n && mode !== 'walk';
   if (!n) return;
-  if (sel.kind === 'item') {
-    selBox.position.set(sel.x, sel.y + sel.h / 2, sel.z);
-    selBox.rotation.set(0, rad(sel.rot), 0);
-    selBox.scale.set(sel.w + 1, sel.h + 1, sel.d + 1);
+  if (o.kind === 'item') {
+    box.position.set(o.x, o.y + o.h / 2, o.z);
+    box.rotation.set(0, rad(o.rot), 0);
+    box.scale.set(o.w + pad, o.h + pad, o.d + pad);
   } else {
     selBounds.setFromObject(n.grp);
-    selBox.rotation.set(0, 0, 0);
-    selBox.position.copy(selBounds.getCenter(v3(0, 0, 0)));
-    selBox.scale.copy(selBounds.getSize(v3(0, 0, 0))).addScalar(1);
+    box.rotation.set(0, 0, 0);
+    box.position.copy(selBounds.getCenter(v3(0, 0, 0)));
+    box.scale.copy(selBounds.getSize(v3(0, 0, 0))).addScalar(pad);
   }
 }
+function updateSel() {
+  sel ? frameBox(selBox, sel, 1) : (selBox.visible = false);
+  hover && hover !== sel ? frameBox(hoverBox, hover, 2.5) : (hoverBox.visible = false);
+}
+function setHover(o) { if (o !== hover) { hover = o; updateSel(); need(); } }
 
 // ======================================================================
 // Câmeras e modos de vista
@@ -1132,6 +1143,7 @@ function setView(m) {
   c2.enabled = m === '2d'; c3.enabled = m === '3d';
   if (m === 'walk') { enterWalk(); applyWalkCam(); }
   if (gridLines) gridLines.visible = m === '2d';
+  if (ceiling) ceiling.visible = m === 'walk';
   sun.castShadow = m !== '2d';
   document.querySelectorAll('#views button').forEach(b => b.classList.toggle('on', b.dataset.view === m));
   $('#hintbar').textContent = m === 'walk' ? 'Arraste para olhar · W A S D para andar · Shift corre · clique num móvel para selecionar' : m === '2d' ? 'Arraste móveis · arraste o fundo para mover a planta · roda = zoom' : 'Arraste móveis · arraste o fundo para girar · botão direito move a câmera · roda = zoom';
@@ -1196,10 +1208,10 @@ function snapAxis(o, v, h, ax, useNeighbors) {
   for (const c of cands) if (Math.abs(c - v) < bd) { bd = Math.abs(c - v); best = c; }
   return best ?? Math.round(v / gridStep) * gridStep;
 }
-function moveItem(o, x, z) {
+function moveItem(o, x, z, magnet = magnetOn) {
   const meta = tp(o);
   o.x = x; o.z = z;
-  if (magnetOn) {
+  if (magnet) {
     if (meta.wallBack) { // encosta de costas na parede mais próxima e vira o móvel pra dentro do quarto
       let bi = -1, bd = 22;
       for (let i = 0; i < 4; i++) { const f = frame(i), dist = v3(x, 0, z).sub(f.o).dot(f.n) - o.d / 2; if (dist < bd && dist > -60) { bd = dist; bi = i; } }
@@ -1208,10 +1220,7 @@ function moveItem(o, x, z) {
     const { hx, hz } = half(o), nb = !meta.small;
     o.x = snapAxis(o, x, hx, 'x', nb); o.z = snapAxis(o, z, hz, 'z', nb);
   } else { o.x = Math.round(x / gridStep) * gridStep; o.z = Math.round(z / gridStep) * gridStep; }
-  if (meta.small) {
-    const s = surfaceAt(o);
-    if (s > 0) { o.y = s; stacked.add(o); } else if (stacked.has(o)) { o.y = 0; stacked.delete(o); }
-  }
+  if (meta.small) o.y = surfaceAt(o); // pousa em cima de mesa/cômoda, ou cai no chão
 }
 
 function onDown(e) {
@@ -1220,7 +1229,7 @@ function onDown(e) {
   if (mode === 'walk') { walk.look = { x: e.clientX, y: e.clientY, yaw: walk.yaw, pitch: walk.pitch }; canvas.setPointerCapture(e.pointerId); return; }
   const p = pick(e);
   if (!p?.o) return;
-  select(p.o);
+  select(p.o); setHover(null);
   const o = p.o;
   drag = { o, plane: new THREE.Plane(UP, -p.hit.point.y), dx: (o.x ?? 0) - p.hit.point.x, dz: (o.z ?? 0) - p.hit.point.z, moved: false };
   ctl().enabled = false;
@@ -1236,7 +1245,7 @@ canvas.addEventListener('pointermove', e => {
     applyWalkCam(); need(); return;
   }
   if (!drag) {
-    if (!hoverRaf && !(e.buttons) && mode !== 'walk') hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; canvas.style.cursor = pick(e)?.o ? 'grab' : 'default'; });
+    if (!hoverRaf && !(e.buttons) && mode !== 'walk') hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; const o = pick(e)?.o || null; setHover(o); canvas.style.cursor = o ? 'grab' : 'default'; });
     return;
   }
   if (!down.moved) return;
@@ -1244,17 +1253,18 @@ canvas.addEventListener('pointermove', e => {
   if (o.kind === 'item') {
     const p = r.intersectPlane(drag.plane, v3());
     if (!p) return;
-    moveItem(o, p.x + drag.dx, p.z + drag.dz);
+    moveItem(o, p.x + drag.dx, p.z + drag.dz, magnetOn && !e.shiftKey); // Shift = sem ímã
   } else {
     const h = wallHit(r) || floorWall(r);
     if (!h) return;
     const len = frame(h.i).len;
-    o.wall = h.i; o.pos = magnetOn && Math.abs(h.along - len / 2) < MAG ? len / 2 : Math.round(h.along / gridStep) * gridStep;
+    o.wall = h.i; o.pos = magnetOn && !e.shiftKey && Math.abs(h.along - len / 2) < MAG ? len / 2 : Math.round(h.along / gridStep) * gridStep;
     if (o.kind === 'poster' && h.y != null) o.y = Math.round(h.y / gridStep) * gridStep;
   }
   drag.moved = true;
   sync(); refreshForm();
 });
+canvas.addEventListener('pointerleave', () => setHover(null));
 canvas.addEventListener('pointerup', e => {
   canvas.style.cursor = 'default';
   if (walk.look) {
@@ -1311,7 +1321,7 @@ function findSpot(o) { // primeiro lugar livre perto do centro (espiral)
 function addCatalog(id) {
   const o = mkItem(id, 0, 0);
   findSpot(o);
-  if (tp(o).small) { const s = surfaceAt(o); if (s) { o.y = s; stacked.add(o); } }
+  if (tp(o).small) o.y = surfaceAt(o);
   add(o);
 }
 function pickPoster() {
@@ -1326,24 +1336,28 @@ function pickPoster() {
 }
 
 // thumbnails renderizadas dos próprios modelos 3D
-function makeThumbs() {
+function makeThumbs() { // poucas por frame pra não travar a abertura
   const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
   r.setPixelRatio(2); r.setSize(72, 72);
   const sc = new THREE.Scene(), cm = new THREE.PerspectiveCamera(28, 1, 1, 5000);
   sc.add(new THREE.HemisphereLight('#fff', '#8a8070', 1.5));
   const dl = new THREE.DirectionalLight('#fff', 1.8); dl.position.set(-200, 400, 300); sc.add(dl);
-  for (const c of CATALOG) {
-    const o = mkItem(c.id, 0, 0, 0, { y: 0 }), g = buildItem(o, { noLight: true });
-    sc.add(g);
-    const bb = new THREE.Box3().setFromObject(g), ctr = bb.getCenter(v3(0, 0, 0)), rr = bb.getSize(v3(0, 0, 0)).length() / 2;
-    cm.position.copy(ctr).add(v3(.9, .7, 1.1).normalize().multiplyScalar(rr / Math.sin(rad(14)) * 1.02));
-    cm.lookAt(ctr); cm.updateProjectionMatrix();
-    r.render(sc, cm);
-    thumbs[c.id] = r.domElement.toDataURL('image/png');
-    sc.remove(g); disposeGroup(g);
-  }
-  r.dispose(); r.forceContextLoss();
-  document.querySelectorAll('[data-th]').forEach(im => im.src = thumbs[im.dataset.th]);
+  const queue = CATALOG.slice();
+  const step = () => {
+    for (let i = 0; i < 4 && queue.length; i++) {
+      const c = queue.shift(), o = mkItem(c.id, 0, 0, 0, { y: 0 }), g = buildItem(o, { noLight: true });
+      sc.add(g);
+      const bb = new THREE.Box3().setFromObject(g), ctr = bb.getCenter(v3(0, 0, 0)), rr = bb.getSize(v3(0, 0, 0)).length() / 2;
+      cm.position.copy(ctr).add(v3(.9, .7, 1.1).normalize().multiplyScalar(rr / Math.sin(rad(14)) * 1.02));
+      cm.lookAt(ctr); cm.updateProjectionMatrix();
+      r.render(sc, cm);
+      thumbs[c.id] = r.domElement.toDataURL('image/png');
+      sc.remove(g); disposeGroup(g);
+      document.querySelectorAll(`[data-th="${c.id}"]`).forEach(im => im.src = thumbs[c.id]);
+    }
+    if (queue.length) requestAnimationFrame(step); else { r.dispose(); r.forceContextLoss(); }
+  };
+  step();
 }
 
 // ======================================================================
@@ -1468,9 +1482,9 @@ $('#swatches').onclick = e => {
 };
 function updateStats() {
   const { w: W, d: D, h: H } = state.room, items = state.objs.filter(o => o.kind === 'item'), occ = items.filter(o => !tp(o).flat && o.y < 5).reduce((s, o) => s + o.w * o.d, 0);
-  const area = W * D / 1e4;
-  $('#stats').innerHTML = `Área: <b>${area.toFixed(1)} m²</b> · Volume: <b>${(area * H / 100).toFixed(1)} m³</b><br>Ocupação do chão: <b>${Math.min(100, Math.round(occ / (W * D) * 100))}%</b><br>Móveis: <b>${items.length}</b>`
+  const area = W * D / 1e4, html = `Área: <b>${area.toFixed(1)} m²</b> · Volume: <b>${(area * H / 100).toFixed(1)} m³</b><br>Ocupação do chão: <b>${Math.min(100, Math.round(occ / (W * D) * 100))}%</b><br>Móveis: <b>${items.length}</b>`
     + (warned.size ? `<br><span style="color: var(--bad)">⚠ ${warned.size} móvel(is) com conflito</span>` : '');
+  if (html !== updateStats.last) $('#stats').innerHTML = updateStats.last = html;
   $('#info').textContent = `${W} × ${D} × ${H} cm  ·  ${items.length} móveis${warned.size ? '  ·  ⚠ ' + warned.size + ' em conflito' : ''}`;
 }
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
@@ -1546,10 +1560,11 @@ function commit() {
   saved = false; updateUndoUI(); autosaveSoon();
 }
 function restore(str) {
-  const idx = sel ? state.objs.indexOf(sel) : -1;
+  const idx = sel ? state.objs.indexOf(sel) : -1, { w, d, h } = state.room;
   state = JSON.parse(str);
   sel = state.objs[idx] || null;
   renderRoom(); renderForm(); sync(); applyTime();
+  if (w !== state.room.w || d !== state.room.d || h !== state.room.h) fitCams();
 }
 const undo = () => { if (hist.i > 0) restore(hist.s[--hist.i]); updateUndoUI(); autosaveSoon(); };
 const redo = () => { if (hist.i < hist.s.length - 1) restore(hist.s[++hist.i]); updateUndoUI(); autosaveSoon(); };

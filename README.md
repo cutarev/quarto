@@ -7,7 +7,7 @@ Modelador de quartos no navegador. Um único arquivo: abra `quarto.html` (Linux/
 - **35 móveis com modelo 3D procedural**: camas (casal, queen, solteiro, beliche), guarda-roupas, armário, cômoda, criado-mudo, arara, escrivaninha, mesas, cadeiras, cadeira de escritório, pufe, poltrona, sofás, estantes com livros, nichos, prateleira de parede, rack, tapetes, plantas, luminárias, espelho, TV, computador, notebook…
 - **Estrutura**: portas (abrem de verdade, com dobradiça/lado configuráveis), janelas (divisões, peitoril, cortina) e pôsteres com moldura. Portas e janelas furam a parede.
 - **Vistas**: 3D, planta 2D (com grade, cotas de distância até as paredes e nomes) e 🚶 andar dentro do quarto (WASD + mouse).
-- **Ímã**: encaixa em paredes e outros móveis, vira o móvel de costas pra parede; itens pequenos pousam em cima de mesas/cômodas. Móveis batendo uns nos outros ou bloqueando a porta ficam com o chão vermelho.
+- **Ímã**: encaixa em paredes e outros móveis, vira o móvel de costas pra parede (`Shift` ao arrastar ignora o ímã); itens pequenos pousam em cima de mesas/cômodas e caem no chão ao sair delas. Móveis batendo uns nos outros ou bloqueando a porta ficam com o chão vermelho.
 - Pisos com textura (madeira, porcelanato, cimento, carpete), paredes com cor ou papel de parede, rodapé, hora do dia (dia/entardecer/noite, com luminárias acesas), sombras.
 - Desfazer/refazer, autosave no navegador, salvar/abrir `.json` (imagens embutidas), foto do quarto em PNG, exemplos prontos. Atalhos: tecla `?`.
 
