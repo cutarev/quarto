@@ -44,3 +44,7 @@ python3 build.py && gh release create v1.1 dist/MeuQuarto.html
 - Paredes: 0=Fundo (z=0), 1=Direita (x=W), 2=Frente (z=D), 3=Esquerda (x=0). Objetos de parede usam `wall` + `pos` (centro ao longo da parede). São planos de um lado só virados pra dentro, então a parede entre a câmera e o quarto some sozinha.
 - Imagens ficam em `assets` (id → data URL), reduzidas a 2048 px ao importar; o projeto salvo carrega só as usadas. Arquivos antigos (v1) são migrados ao abrir.
 - Tela de entrada (`#start`): cria o quarto com as medidas digitadas (portas na parede da Frente, janelas no Fundo) via `replaceState`, que mantém o histórico para o `Ctrl+Z` voltar.
+
+## Licença
+
+[MIT](LICENSE): pode usar, copiar, modificar e distribuir à vontade, desde que mantenha o aviso de copyright.
