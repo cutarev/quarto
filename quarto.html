@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Meu Quarto</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛏</text></svg>">
 <style>
   :root { --bg: #14171c; --panel: #1b1f26; --panel2: #232831; --line: #2e3440; --text: #e7eaf0; --mut: #8b94a3; --acc: #5aa0ff; --acc2: #ff9f43; --bad: #ff5c5c }
   * { box-sizing: border-box }
+  [hidden] { display: none !important }
   body { margin: 0; display: flex; height: 100vh; font: 13px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); overflow: hidden }
   button, select, input { font: inherit; color: inherit }
   button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; margin: 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; cursor: pointer; white-space: nowrap }
@@ -67,6 +69,14 @@
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; max-width: 520px }
   dialog::backdrop { background: #0009 }
   dialog table { border-collapse: collapse; margin: 8px 0 }
+  #start { width: 460px }
+  #start::backdrop { backdrop-filter: blur(4px) }
+  #start .logo { font-size: 26px; font-weight: 800 } #start .logo span { color: var(--acc) }
+  #start .fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px }
+  #start .fields label { display: flex; flex-direction: column; gap: 3px; color: var(--mut); font-size: 12px }
+  #start .big { width: 100%; padding: 9px; font-size: 14px; margin-top: 12px }
+  #start .grid2 .btn { padding: 5px 10px }
+  #area { align-self: end; padding-bottom: 5px; color: var(--mut) }
   dialog td { padding: 3px 14px 3px 0 } kbd { background: #12151a; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 6px; font: 12px monospace }
 </style>
 <script type="importmap">
@@ -125,7 +135,7 @@
     <button id="shot" title="Salvar imagem do quarto">📷</button>
     <button id="save" title="Salvar projeto (Ctrl+S)">Salvar</button>
     <label class="btn">Abrir<input type="file" id="open" accept=".json,application/json" hidden></label>
-    <select id="examples" title="Começar de um exemplo"><option value="">Exemplos…</option><option value="vazio">Quarto vazio</option><option value="casal">Quarto de casal</option><option value="solteiro">Quarto de solteiro</option><option value="office">Home office</option></select>
+    <button id="newBtn" title="Novo quarto ou exemplo">Novo</button>
     <button id="helpBtn" title="Atalhos (?)">?</button>
   </div>
   <div id="insp"></div>
@@ -151,6 +161,32 @@
   </table>
   <p class="hint">Móveis em vermelho no chão estão batendo em outro móvel ou bloqueando a porta. O projeto é salvo sozinho no navegador.</p>
   <form method="dialog"><button>Fechar</button></form>
+</dialog>
+
+<dialog id="start">
+  <div class="logo">🛏 Meu <span>Quarto</span></div>
+  <p class="hint">Monte seu quarto em 3D direto no navegador.</p>
+  <button id="continue" class="big on">Continuar o quarto atual</button>
+  <h3>Novo quarto</h3>
+  <form id="newRoom" method="dialog">
+    <div class="fields">
+      <label>Largura (cm)<input type="number" name="w" value="400" min="100" max="2000" required></label>
+      <label>Comprimento (cm)<input type="number" name="d" value="350" min="100" max="2000" required></label>
+      <label>Altura (cm)<input type="number" name="h" value="260" min="150" max="600" required></label>
+      <label>Portas<input type="number" name="doors" value="1" min="0" max="3" required></label>
+      <label>Janelas<input type="number" name="wins" value="1" min="0" max="3" required></label>
+      <div id="area"></div>
+    </div>
+    <button class="big on">Criar quarto</button>
+  </form>
+  <h3>Ou comece de</h3>
+  <div class="grid2">
+    <button data-ex="casal">Quarto de casal</button>
+    <button data-ex="solteiro">Quarto de solteiro</button>
+    <button data-ex="office">Home office</button>
+    <label class="btn" for="open">📂 Abrir projeto (.json)</label>
+  </div>
+  <p class="hint">Trocou de ideia? <kbd>Ctrl+Z</kbd> volta para o quarto anterior.</p>
 </dialog>
 
 <script type="module">
@@ -1601,17 +1637,30 @@ $('#open').onchange = async e => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f) return;
-  try { await setState(JSON.parse(await f.text())); toast('Projeto aberto'); } catch (err) { alert('Arquivo inválido: ' + err.message); }
+  try { await setState(JSON.parse(await f.text())); $('#start').close(); toast('Projeto aberto'); } catch (err) { alert('Arquivo inválido: ' + err.message); }
 };
-$('#examples').onchange = async e => {
-  const k = e.target.value;
-  e.target.value = '';
-  if (k && confirm('Começar deste exemplo? O projeto atual será substituído (dá para desfazer com Ctrl+Z).')) {
-    const keep = hist.s.slice(), ki = hist.i;
-    await setState(PRESETS[k](), false);
-    hist.s = keep; hist.i = ki; commit();
-  }
+async function replaceState(s) { // troca o projeto mantendo o histórico (Ctrl+Z volta pro anterior)
+  const keep = hist.s.slice(), ki = hist.i;
+  await setState(s, false);
+  hist.s = keep; hist.i = ki; commit();
+}
+
+// Tela de entrada: medidas do quarto novo, exemplos ou abrir arquivo
+const spread = (n, len, maxW, make, wall) => Array.from({ length: n }, (_, i) => make(wall, len * (i + 1) / (n + 1), { w: Math.min(maxW, len / (n + 1) - 20) }));
+const roomForm = () => Object.fromEntries([...new FormData($('#newRoom'))].map(([k, v]) => [k, Number(v)]));
+function showArea() {
+  const { w, d } = roomForm(), m = n => (n / 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+  $('#area').textContent = w && d ? `${m(w)} × ${m(d)} m · ${(w * d / 1e4).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m²` : '';
+}
+$('#newRoom').oninput = showArea;
+$('#newRoom').onsubmit = () => {
+  const f = roomForm(), s = mkState({ w: f.w, d: f.d, h: f.h });
+  s.objs.push(...spread(f.doors, f.w, 85, mkDoor, 2), ...spread(f.wins, f.w, 120, mkWin, 0)); // portas na Frente, janelas no Fundo
+  replaceState(s);
 };
+$('#start .grid2').onclick = e => { const k = e.target.dataset.ex; if (k) { $('#start').close(); replaceState(PRESETS[k]()); } };
+$('#continue').onclick = () => $('#start').close();
+$('#newBtn').onclick = () => { $('#continue').hidden = false; $('#start').showModal(); };
 $('#shot').onclick = () => {
   const hs = selBox.visible; selBox.visible = false;
   renderer.render(scene, cam());
@@ -1632,7 +1681,7 @@ $('#grid').onchange = e => { gridStep = Number(e.target.value); };
 addEventListener('keyup', e => walk.keys.delete(e.key.toLowerCase()));
 addEventListener('blur', () => walk.keys.clear());
 addEventListener('keydown', e => {
-  if (e.target.matches('input, select, textarea') || $('#help').open) return;
+  if (e.target.matches('input, select, textarea') || $('dialog[open]')) return;
   const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
   if (mode === 'walk' && ['w', 'a', 's', 'd', 'shift', 'arrowup', 'arrowdown'].includes(k)) { walk.keys.add(k); e.preventDefault(); return; }
   if (ctrl) {
@@ -1668,6 +1717,9 @@ async function init() {
   if (!loaded) await setState(PRESETS.casal());
   setMagnet(true); setView('3d');
   renderCatalog(); updateUndoUI();
+  $('#continue').hidden = !loaded;
+  showArea();
+  $('#start').showModal();
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), .1);
